@@ -24,6 +24,7 @@ crates/
 docs/
   rules.md          规则权威文档（含 §9 每 tick 结算顺序、§10 种子模式、§11 CLI 规范、§14 测试清单）
   internal-api.md   各 crate 的冻结接口签名
+  ai-experiments.md 历次 AI 对抗实验、评测口径与失败原因
   replay-format.md  回放 JSONL 的行结构与 12 种事件字段
   scoring.md        评分公式与归一化
   webui-spec.md     Web UI 规格
@@ -31,6 +32,7 @@ tools/
   validate_replay.py  回放契约校验器（0 error 才算过）
   check_versions.py   manifest / summary / matches / 回放 init 四处版本号一致性
   analyze_ai.py       把一批 replays 汇总成 AI 行为指标（冲突/非法动作/横跳/停顿/掉虚空，按 AI 归因）
+  bench_ai.py         A/B 评测：per-match 多地图 + 双向换槽位（胜率/平局/场均分）
   acceptance.sh       五关验收脚本（全量测试 → 批量对局 → 回放校验 → 版本一致性 → Web 无头取证）
   shot.js             无头取证工具（CDP：等 __QFR_READY__ → 断言 __QFR_STATUS__ → 截图）
   make_demo_replay.py 生成 samples/ 下的示例回放
@@ -196,28 +198,44 @@ cli 侧的集成测试在 `crates/cli/tests/`：`seed_modes.rs`（三种种子�
   所以 `THREAT_RADIUS` 常常整局不触发——这是地图/规则决定的，不是 AI 失效。
 - 想量化上述指标：`python3 tools/analyze_ai.py out/<run>`（可按 AI 名字拆分）。
 
-### `raider` 的实测与迭代记录
+### 评测口径（先读）
 
-口径：release 构建、`--seed-mode fixed`、8 张固定地图（seed 1–8）、每张 200 局；
-2 队对局还把两个 AI 的槽位互换各跑一遍（共 3200 局），抵消先手与 AI 种子的偏差。
+内置 AI 几乎是确定性的：`--seed-mode fixed` 下，同一张图 + 同一批 AI 会把**同一局重复 N 次**，
+把 8 张图的胜负放大成"3200 局 100% 胜率"。泛化测试必须用 `per-match`（每局新地图种子）
++ **双向换槽位**（抵消先手与 AI 种子偏差）。复现：
 
-| 对局 | 胜率 | 场均得分 | 对手场均 |
+```bash
+./scripts/cargo build --release -p cli
+python3 tools/bench_ai.py raider greedy_flag --matches 500 --base-seed 910001
+```
+
+| 对局 | 胜 / 平 / 负 | 场均得分 | 对手场均 |
 |---|---|---|---|
-| `raider` vs `greedy_flag`（2 队，3200 局） | **100.0%** | **12.21** | 5.59 |
-| `raider` vs `random`（2 队，1600 局） | 100.0% | 18.27 | 0.00 |
-| `raider` + `greedy_flag` + `defender`（3 队，3200 局） | **91.5%** | **14.46** | 9.31 / 0.00 |
+| `raider` vs `greedy_flag`（2 队，1000 局 / 500 图） | 908 / 37 / 55（**90.8%**） | **11.19** | 4.69 |
+| `raider` vs `random`（2 队，1000 局 / 500 图） | 932 / 68 / 0（93.2%） | 14.89 | 0.00 |
+| `raider` + `greedy_flag` + `defender`（3 队，750 局，轮换槽位） | 700 / 15 / 35（**93.3%**） | **16.24** | 7.54 / 0.00 |
 
-同口径下 `greedy_flag` vs `random` 的基线成绩是 96.0% / 8.93 分（`out/base_2p`）。
+> 本表旧版写的是 fixed 模式下的"100% / 3200 局"，属于重复计数，已按 per-match 口径更正。
 
-第一版 `raider`（没有换位逻辑）是 2 队 91.0% / 10.54 分、3 队 66.4% / 12.01 分。
-差距几乎全来自**窄走廊死锁**：三个单位在 1 格宽的通道里互相挡路，`--seed 4` 整局只拿 1 分。
-修法不是"卡住就随机走一步"（那会在死胡同里 A→B→A 循环），而是利用规则 §7.5 的
-2-环换位（`A→B, B→A` 双方都成功），见 `crates/ai/src/raider.rs` 的 `plan_swaps`。
+### 迭代记录：窄走廊死锁
+
+第一版 `raider` 没有换位逻辑，在固定的 8 张图上做消融时，2 队成绩是 91.0% / 10.54 分
+（3 队 66.4% / 12.01 分）。差距几乎全来自**窄走廊死锁**：三个单位在 1 格宽的通道里互相挡路，
+`--seed 4` 整局只拿 1 分。修法不是"卡住就随机走一步"（那会在死胡同里 A→B→A 循环），
+而是利用规则 §7.5 的 2-环换位（`A→B, B→A` 双方都成功），见 `raider.rs` 的 `plan_swaps`。
 
 `--seed 5` 的场均 8.1 分不是缺陷：该图阵营到中心的最短路是 22 格（单程 22 tick），
 300 tick 内 3 个单位的理论上限约 9–10 分，实测 9 分。
 
-## 贡献者
+### 尝试做出更强的 AI（未成功）
+
+以 `raider` 为基线，后续试了 8 个方向（预测设伏 + 拦截半径、带权绕路、射程内停火、
+护送优先、集火、终局控旗、拦截"最接近回城"的携带者、完全关闭拦截），
+在 800–1000 张随机地图上**全部不超过基线**；
+纯克隆的 A/A 对照是精确的 50/50。实验数据、原因分析与后续方向见
+[docs/ai-experiments.md](docs/ai-experiments.md)。没有把同水平的 900 行副本合入仓库。
+
+## 贡献者## 贡献者
 
 - 项目发起、规则设计与验收：[Woshichinese114514](https://github.com/Woshichinese114514)
 - Rust 引擎 / 地图生成 / AI / 评分 / CLI / Web UI 回放查看器：**DeepSeek**（AI 结对实现，
