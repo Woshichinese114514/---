@@ -4,7 +4,7 @@
 //! 这个 trait，AI 只能通过 [`sim::ai::Observation`]（一份只读快照）观察战场，通过
 //! [`sim::ai::TeamActions`] 提交意图。这样 AI 无法偷看引擎内部状态，也无法改变规则。
 //!
-//! ## 三个基线 AI 的定位
+//! ## 四个内置 AI 的定位
 //!
 //! 它们不是「强 AI」，而是**行为可预期、可复现的对照基线**，用来验证引擎、做后续 AI 的 A/B 基准：
 //!
@@ -13,6 +13,7 @@
 //! | `random` | [`AI_RANDOM`] | 纯随机（但仍只提交合法动作）——下界基线 |
 //! | `greedy_flag` | [`AI_GREEDY_FLAG`] | 抢最近的地上旗、沿最短路送回己方阵营 |
 //! | `defender` | [`AI_DEFENDER`] | 守家，打靠近阵营的敌人 |
+//! | `raider` | [`AI_RAIDER`] | 流水线抢旗（互斥分旗 / 携带者避险 / 拦截 / 换位），得分参照 |
 //!
 //! ## 扩展点只有一个
 //!
@@ -27,12 +28,14 @@
 
 mod defender;
 mod greedy_flag;
+mod raider;
 mod random;
 
 pub mod common;
 
 pub use defender::DefenderAi;
 pub use greedy_flag::GreedyFlagAi;
+pub use raider::RaiderAi;
 pub use random::RandomAi;
 pub use sim::ai::TeamAi;
 
@@ -50,6 +53,8 @@ pub const AI_RANDOM: &str = "random";
 pub const AI_GREEDY_FLAG: &str = "greedy_flag";
 /// 守家基线 AI 的名字。
 pub const AI_DEFENDER: &str = "defender";
+/// 流水线抢旗 AI 的名字（基线之外的第四个 AI，用于和基线做 A/B）。
+pub const AI_RAIDER: &str = "raider";
 /// CLI 未指定 `--ai` 时使用的默认 AI。
 pub const DEFAULT_AI: &str = AI_RANDOM;
 
@@ -100,7 +105,8 @@ pub fn register_all() -> AiRegistry {
         .register(AI_GREEDY_FLAG, |ai_seed| {
             Box::new(GreedyFlagAi::new(ai_seed))
         })
-        .register(AI_DEFENDER, |ai_seed| Box::new(DefenderAi::new(ai_seed)));
+        .register(AI_DEFENDER, |ai_seed| Box::new(DefenderAi::new(ai_seed)))
+        .register(AI_RAIDER, |ai_seed| Box::new(RaiderAi::new(ai_seed)));
     registry
 }
 
@@ -110,15 +116,15 @@ mod tests {
     use sim::ai::{Observation, TeamActions};
 
     #[test]
-    fn register_all_registers_three_baselines() {
+    fn register_all_registers_all_builtins() {
         let registry = register_all();
-        for name in [AI_RANDOM, AI_GREEDY_FLAG, AI_DEFENDER] {
+        for name in [AI_RANDOM, AI_GREEDY_FLAG, AI_DEFENDER, AI_RAIDER] {
             assert!(registry.contains(name), "{name} 必须在注册表里");
         }
         // names() 必须已排序（docs/internal-api.md §4）：BTreeMap 保证字典序。
         assert_eq!(
             registry.names(),
-            vec![AI_DEFENDER, AI_GREEDY_FLAG, AI_RANDOM]
+            vec![AI_DEFENDER, AI_GREEDY_FLAG, AI_RAIDER, AI_RANDOM]
         );
         assert!(registry.contains(DEFAULT_AI), "默认 AI 必须可用");
         assert_eq!(DEFAULT_AI, AI_RANDOM);
@@ -136,7 +142,12 @@ mod tests {
     #[test]
     fn created_ai_reports_the_registered_name() {
         let registry = register_all();
-        for (name, seed) in [(AI_RANDOM, 1u64), (AI_GREEDY_FLAG, 2), (AI_DEFENDER, 3)] {
+        for (name, seed) in [
+            (AI_RANDOM, 1u64),
+            (AI_GREEDY_FLAG, 2),
+            (AI_DEFENDER, 3),
+            (AI_RAIDER, 4),
+        ] {
             let ai = registry.create(name, seed).expect("内置 AI 必须可创建");
             assert_eq!(ai.name(), name, "create 出来的实例名字必须与注册名一致");
         }

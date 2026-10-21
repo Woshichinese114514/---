@@ -24,7 +24,7 @@ cli -> scoring -> protocol
 
 * **trait `TeamAi`、`Observation`、`TeamActions`、`UnitCommand`、`Action` 定义在 `sim` crate 的
   `sim::ai` 模块**（`crates/sim/src/ai.rs`），并由 `sim` 顶层 re-export；
-* `ai` crate 负责 **注册表 `AiRegistry`、工厂 `AiFactory`、三个基线 AI 实现**；
+* `ai` crate 负责 **注册表 `AiRegistry`、工厂 `AiFactory`、三个基线 AI 与 `raider` 的实现**；
 * `cli` 从注册表创建 AI 实例后注入 `Sim::new(...)`。
 
 这样既满足「sim 不依赖具体 AI 实现」，也满足「AI 按名字从注册表选用」。

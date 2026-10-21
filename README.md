@@ -17,7 +17,8 @@ crates/
               MatchResult、版本号三件套（protocol::versions）
   mapgen/     确定性地图生成（版本化 generate_vN），MAP_GEN_VERSION 在此
   sim/        规则实现：回合结算、移动冲突、攻击、炸弹、旗、复活、得分（无 AI、无 UI）
-  ai/         TeamAi 特质与三个基线 AI（random / greedy_flag / defender）+ AiRegistry
+  ai/         TeamAi 特质、三个基线 AI（random / greedy_flag / defender）
+              与得分参照 AI raider + AiRegistry
   scoring/    把 MatchResult 聚合成评分报告（胜率/分数占比/击杀比，默认权重见 docs/scoring.md）
   cli/        `qfr` 命令：种子模式、rayon 并行批量跑、回放导出、四件套写盘
 docs/
@@ -173,13 +174,15 @@ cli 侧的集成测试在 `crates/cli/tests/`：`seed_modes.rs`（三种种子�
 
 ## AI 基线与已知限制
 
-三个基线 AI 的设计目标不同，**不是三个强度档位**，而是三种可对比的行为策略：
+三个基线 AI 的设计目标不同，**不是三个强度档位**，而是三种可对比的行为策略；
+`raider` 是基线之外的得分参照实现（用来量化"引擎还能榨出多少分"）：
 
 | AI | 策略 | 备注 |
 |---|---|---|
 | `random` | 随机移动/攻击/放炸弹 | 强度下界；也是未指定槽位的默认值 |
 | `greedy_flag` | 抢最近的旗 → 回己方阵营得分；没有旗时在中心区待命（三单位分散占位） | 主基线 |
 | `defender` | 守在己方阵营 3×3 内（空闲时每 25 tick 在 9 格里轮换站位），只打进入射程的敌人 | 反抢旗基线 |
+| `raider` | 流水线抢旗：互斥分配地上旗、携带者避开火力、拦截敌方携带者、窄走廊主动换位 | 非基线，得分参照（见下） |
 
 已记录在代码注释里的取舍（改动前请先读 `crates/ai/src/greedy_flag.rs` 与 `defender.rs` 的模块文档）：
 
@@ -192,6 +195,27 @@ cli 侧的集成测试在 `crates/cli/tests/`：`seed_modes.rs`（三种种子�
 - `defender` 在本游戏里**天然很少开火**：得分要把旗送回**自己**阵营，对手没有理由走进你的基地，
   所以 `THREAT_RADIUS` 常常整局不触发——这是地图/规则决定的，不是 AI 失效。
 - 想量化上述指标：`python3 tools/analyze_ai.py out/<run>`（可按 AI 名字拆分）。
+
+### `raider` 的实测与迭代记录
+
+口径：release 构建、`--seed-mode fixed`、8 张固定地图（seed 1–8）、每张 200 局；
+2 队对局还把两个 AI 的槽位互换各跑一遍（共 3200 局），抵消先手与 AI 种子的偏差。
+
+| 对局 | 胜率 | 场均得分 | 对手场均 |
+|---|---|---|---|
+| `raider` vs `greedy_flag`（2 队，3200 局） | **100.0%** | **12.21** | 5.59 |
+| `raider` vs `random`（2 队，1600 局） | 100.0% | 18.27 | 0.00 |
+| `raider` + `greedy_flag` + `defender`（3 队，3200 局） | **91.5%** | **14.46** | 9.31 / 0.00 |
+
+同口径下 `greedy_flag` vs `random` 的基线成绩是 96.0% / 8.93 分（`out/base_2p`）。
+
+第一版 `raider`（没有换位逻辑）是 2 队 91.0% / 10.54 分、3 队 66.4% / 12.01 分。
+差距几乎全来自**窄走廊死锁**：三个单位在 1 格宽的通道里互相挡路，`--seed 4` 整局只拿 1 分。
+修法不是"卡住就随机走一步"（那会在死胡同里 A→B→A 循环），而是利用规则 §7.5 的
+2-环换位（`A→B, B→A` 双方都成功），见 `crates/ai/src/raider.rs` 的 `plan_swaps`。
+
+`--seed 5` 的场均 8.1 分不是缺陷：该图阵营到中心的最短路是 22 格（单程 22 tick），
+300 tick 内 3 个单位的理论上限约 9–10 分，实测 9 分。
 
 ## 贡献者
 
