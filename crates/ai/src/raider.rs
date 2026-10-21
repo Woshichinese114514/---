@@ -509,7 +509,7 @@ fn plan_swaps(
     bombs: &HashSet<Coord>,
 ) -> HashMap<EntityId, Direction> {
     let mut ideals: HashMap<EntityId, Direction> = HashMap::new();
-    let roles = plan_roles_for_swaps(obs);
+    let roles = plan_roles(obs);
     for &unit_id in &obs.my_units {
         let Some(unit) = obs.me(unit_id) else {
             continue;
@@ -565,14 +565,6 @@ fn plan_swaps(
         }
     }
     swaps
-}
-
-/// 换位判定用的角色表。
-///
-/// 单独包一层只是为了避免 `plan_swaps` 与 `decide` 互相借用 `roles` 造成所有权纠缠；
-/// 分配本身是纯函数，重复算一次的代价可以忽略（3 个单位 × 2 面旗）。
-fn plan_roles_for_swaps(obs: &Observation) -> HashMap<EntityId, Role> {
-    plan_roles(obs)
 }
 
 /// "理想下一步"：只看地形、目标与危险格，**忽略其他单位**。
